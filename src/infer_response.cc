@@ -239,6 +239,10 @@ InferResponse::Send(
   static bool log_warning = true;
 #endif  // TRITON_ENABLE_GPU
 
+#ifdef TRITON_ENABLE_AMD_GPU
+  static bool log_warning = true;
+#endif  // TRITON_ENABLE_AMD_GPU
+
   std::shared_ptr<TRITONSERVER_Error*> response_error =
       WrapTritonErrorInSharedPtr(nullptr);
   std::unique_ptr<ScopedDefer> response_error_handling;
@@ -320,15 +324,15 @@ InferResponse::Send(
       void* buffer = triton_output_buffer;
       BackendMemory* backend_memory;
       std::unique_ptr<BackendMemory> lbackend_memory;
-      std::unique_ptr<CUDAMemoryPoolManager>& cuda_pool =
-          shm_pool->GetCUDAMemoryPoolManager();
-      if (cuda_pool->UseCudaSharedPool(src_memory_type_id)) {
+      std::unique_ptr<MemoryPoolManager>& cuda_pool =
+          shm_pool->GetMemoryPoolManager();
+      if (cuda_pool->UseSharedPool(src_memory_type_id)) {
         try {
           if (!IsUsingCUDAPool(
                   cuda_pool, actual_memory_type_id, triton_output_buffer)) {
             THROW_IF_TRITON_ERROR(BackendMemory::Create(
                 reinterpret_cast<TRITONBACKEND_MemoryManager*>(
-                    shm_pool->GetCUDAMemoryPoolManager()
+                    shm_pool->GetMemoryPoolManager()
                         ->TritonMemoryManager()),
                 BackendMemory::AllocationType::GPU_POOL, actual_memory_type_id,
                 output_tensor->ByteSize(), &backend_memory));
@@ -379,6 +383,71 @@ InferResponse::Send(
       gpu_buffer_helper.AddBuffer(output_buffer->ShmHandle());
       output_buffers.push_back(
           {std::move(output_buffer), triton_output_buffer});
+#elif defined(TRITON_ENABLE_AMD_GPU)
+      // Check if the triton-provided output buffer is using CUDA shared memory
+      // pool. If not, try to allocate a new buffer from the pool.
+      void* buffer = triton_output_buffer;
+      BackendMemory* backend_memory;
+      std::unique_ptr<BackendMemory> lbackend_memory;
+      std::unique_ptr<MemoryPoolManager>& cuda_pool =
+          shm_pool->GetMemoryPoolManager();
+      if (cuda_pool->UseSharedPool(src_memory_type_id)) {
+        try {
+          if (!IsUsingCUDAPool(
+                  cuda_pool, actual_memory_type_id, triton_output_buffer)) {
+            THROW_IF_TRITON_ERROR(BackendMemory::Create(
+                reinterpret_cast<TRITONBACKEND_MemoryManager*>(
+                    shm_pool->GetMemoryPoolManager()
+                        ->TritonMemoryManager()),
+                BackendMemory::AllocationType::GPU_POOL, actual_memory_type_id,
+                output_tensor->ByteSize(), &backend_memory));
+            lbackend_memory.reset(backend_memory);
+            buffer = lbackend_memory->MemoryPtr();
+          }
+        }
+        catch (const PythonBackendException& pb_exception) {
+          if (log_warning) {
+            LOG_MESSAGE(
+                TRITONSERVER_LOG_WARN,
+                (std::string("Failed to allocate memory from AMD memory pool "
+                             "for output tensor: ") +
+                 pb_exception.what() +
+                 std::string(", will use AMD IPC for GPU output transfer."))
+                    .c_str());
+          }
+          log_warning = false;
+        }
+      }
+      hipIpcMemHandle_t* hip_ipc_mem_handle_p;
+      SET_ERROR_AND_RETURN(
+          response_error,
+          TRITONSERVER_BufferAttributesCudaIpcHandle(
+              output_buffer_attributes,
+              reinterpret_cast<void**>(&hip_ipc_mem_handle_p)));
+
+      if (hip_ipc_mem_handle_p != nullptr) {
+        SET_ERROR_AND_RETURN_IF_EXCEPTION(
+            response_error,
+            output_buffer = PbMemory::Create(
+                shm_pool, actual_memory_type, actual_memory_type_id,
+                output_tensor->ByteSize(), reinterpret_cast<char*>(buffer),
+                false /* copy_gpu */));
+        output_buffer->SetHipIpcHandle(hip_ipc_mem_handle_p);
+      } else {
+        SET_ERROR_AND_RETURN_IF_EXCEPTION(
+            response_error,
+            output_buffer = PbMemory::Create(
+                shm_pool, actual_memory_type, actual_memory_type_id,
+                output_tensor->ByteSize(), reinterpret_cast<char*>(buffer),
+                true /* copy_gpu */));
+      }
+
+      if (lbackend_memory != nullptr) {
+        output_buffer->SetBackendMemory(std::move(lbackend_memory));
+      }
+      gpu_buffer_helper.AddBuffer(output_buffer->ShmHandle());
+      output_buffers.push_back(
+          {std::move(output_buffer), triton_output_buffer});
 #endif
     }
 
@@ -398,6 +467,7 @@ InferResponse::Send(
     }
 
     if (src_memory_type != TRITONSERVER_MEMORY_GPU) {
+      #ifdef TRITON_ENABLE_GPU
       SET_ERROR_AND_RETURN(
           response_error,
           CopyBuffer(
@@ -406,6 +476,16 @@ InferResponse::Send(
               output_tensor->ByteSize(), output_tensor->DataPtr(),
               triton_output_buffer, reinterpret_cast<cudaStream_t>(cuda_stream),
               &cuda_used));
+      #elif defined(TRITON_ENABLE_AMD_GPU)
+      SET_ERROR_AND_RETURN(
+          response_error,
+          CopyBuffer(
+              "Failed to copy the output tensor to buffer.", src_memory_type,
+              src_memory_type_id, actual_memory_type, actual_memory_type_id,
+              output_tensor->ByteSize(), output_tensor->DataPtr(),
+              triton_output_buffer, reinterpret_cast<hipStream_t>(cuda_stream),
+              &cuda_used));
+      #endif  // TRITON_ENABLE_GPU || TRITON_ENABLE_AMD_GPU
     }
 
     cuda_copy |= cuda_used;
@@ -448,6 +528,12 @@ InferResponse::Send(
     cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cuda_stream));
   }
 #endif  // TRITON_ENABLE_GPU
+
+#ifdef TRITON_ENABLE_AMD_GPU
+  if (cuda_copy) {
+    hipStreamSynchronize(reinterpret_cast<hipStream_t>(cuda_stream));
+  }
+#endif
 }
 #endif
 

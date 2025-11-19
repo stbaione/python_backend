@@ -67,11 +67,26 @@
 #include <cuda_runtime_api.h>
 #endif  // TRITON_ENABLE_GPU
 
+#ifdef TRITON_ENABLE_AMD_GPU
+#include <hip/hip_runtime_api.h>
+#endif
+
 namespace py = pybind11;
 using namespace pybind11::literals;
 namespace bi = boost::interprocess;
-#ifndef TRITON_ENABLE_GPU
-using cudaStream_t = void*;
+// #ifndef TRITON_ENABLE_GPU
+// using cudaStream_t = void*;
+// #endif
+// #ifndef TRITON_ENABLE_AMD_GPU
+// using hipStream_t = void*;
+// #endif
+
+#ifdef TRITON_ENABLE_GPU
+using deviceStream_t = cudaStream_t;
+#elif defined(TRITON_ENABLE_AMD_GPU)
+using deviceStream_t = hipStream_t;
+#else
+using deviceStream_t = void*;
 #endif
 
 namespace triton { namespace backend { namespace python {
@@ -1015,6 +1030,19 @@ Stub::Finalize()
                  std::to_string(entry.first);
     }
   }
+#elif defined(TRITON_ENABLE_AMD_GPU)
+  // We also need to destroy created proxy HIP streams for dlpack, if any
+  std::lock_guard<std::mutex> lock(dlpack_proxy_stream_pool_mu_);
+  for (auto& entry : dlpack_proxy_stream_pool_) {
+    // We don't need to switch device to destroy a stream
+    // https://stackoverflow.com/questions/64663943/how-to-destroy-a-stream-that-was-created-on-a-specific-device
+    hipError_t err = hipStreamDestroy(entry.second);
+    if (err != hipSuccess) {
+      LOG_ERROR
+          << "Failed to destroy dlpack HIP proxy stream on device with id " +
+                 std::to_string(entry.first);
+    }
+  }
 #endif
 }
 
@@ -1043,9 +1071,24 @@ Stub::~Stub()
     if (shm_pool_ != nullptr) {
       CUDAHandler& cuda_api = CUDAHandler::getInstance();
       for (auto& m :
-           shm_pool_->GetCUDAMemoryPoolManager()->CUDAPoolAddressMap()) {
+           shm_pool_->GetMemoryPoolManager()->PoolAddressMap()) {
         if (m.second != nullptr) {
           cuda_api.CloseCudaHandle(m.first, m.second);
+        }
+      }
+    }
+  }
+  catch (const PythonBackendException& pb_exception) {
+    std::cerr << "Error when closing CUDA handle: " << pb_exception.what();
+  }
+#elif defined(TRITON_ENABLE_AMD_GPU)
+  try {
+    if (shm_pool_ != nullptr) {
+      HIPHandler& hip_api = HIPHandler::getInstance();
+      for (auto& m :
+           shm_pool_->GetMemoryPoolManager()->PoolAddressMap()) {
+        if (m.second != nullptr) {
+          hip_api.CloseHipHandle(m.first, m.second);
         }
       }
     }
@@ -1412,7 +1455,7 @@ Stub::EnqueueUtilsMessage(
   stub_to_parent_message_cv_.notify_one();
 }
 
-cudaStream_t
+deviceStream_t
 Stub::GetProxyStream(const int& device_id)
 {
 #ifdef TRITON_ENABLE_GPU
@@ -1427,6 +1470,21 @@ Stub::GetProxyStream(const int& device_id)
     } else {
       throw PythonBackendException(
           "Failed to create a CUDA stream for a DLPack call.");
+    }
+  }
+  return dlpack_proxy_stream_pool_[device_id];
+#elif defined(TRITON_ENABLE_AMD_GPU)
+  std::lock_guard<std::mutex> lock(dlpack_proxy_stream_pool_mu_);
+  if (dlpack_proxy_stream_pool_.find(device_id) ==
+      dlpack_proxy_stream_pool_.end()) {
+    hipStream_t new_proxy_stream;
+    hipError_t err = hipStreamCreate(&new_proxy_stream);
+    if (err == hipSuccess) {
+      dlpack_proxy_stream_pool_.emplace(device_id, new_proxy_stream);
+      return new_proxy_stream;
+    } else {
+      throw PythonBackendException(
+          "Failed to create a HIP stream for a DLPack call.");
     }
   }
   return dlpack_proxy_stream_pool_[device_id];
@@ -1454,13 +1512,13 @@ Stub::GetCUDAMemoryPoolAddress(std::unique_ptr<IPCMessage>& ipc_message)
     cuda_api.OpenCudaHandle(
         cuda_pool_message_ptr->device_id, &cuda_pool_message_ptr->cuda_handle,
         &cuda_pool_address);
-    shm_pool_->GetCUDAMemoryPoolManager()->SetCUDAPoolAddress(
+    shm_pool_->GetMemoryPoolManager()->SetPoolAddress(
         cuda_pool_message_ptr->device_id, cuda_pool_address);
   }
   catch (const PythonBackendException& pb_exception) {
     has_exception = true;
     error_string = pb_exception.what();
-    shm_pool_->GetCUDAMemoryPoolManager()->SetCUDAPoolAddress(
+    shm_pool_->GetMemoryPoolManager()->SetPoolAddress(
         cuda_pool_message_ptr->device_id, nullptr);
   }
 
@@ -1484,6 +1542,54 @@ Stub::GetCUDAMemoryPoolAddress(std::unique_ptr<IPCMessage>& ipc_message)
     cuda_pool_message_ptr->waiting_on_stub = true;
     ipc_message->ResponseCondition()->notify_all();
     while (cuda_pool_message_ptr->waiting_on_stub) {
+      ipc_message->ResponseCondition()->wait(lock);
+    }
+  }
+#elif defined(TRITON_ENABLE_AMD_GPU)
+  bool has_exception = false;
+  std::string error_string;
+  std::unique_ptr<PbString> error_string_shm;
+
+  HIPMemPoolMessage* hip_pool_message_ptr = nullptr;
+  try {
+    AllocatedSharedMemory<HIPMemPoolMessage> hip_handle_shm =
+        shm_pool_->Load<HIPMemPoolMessage>(ipc_message->Args());
+    hip_pool_message_ptr = hip_handle_shm.data_.get();
+    HIPHandler& hip_api = HIPHandler::getInstance();
+    void* hip_pool_address;
+    hip_api.OpenHipHandle(
+        hip_pool_message_ptr->device_id, &hip_pool_message_ptr->cuda_handle,
+        &hip_pool_address);
+    shm_pool_->GetMemoryPoolManager()->SetPoolAddress(
+        hip_pool_message_ptr->device_id, hip_pool_address);
+  }
+  catch (const PythonBackendException& pb_exception) {
+    has_exception = true;
+    error_string = pb_exception.what();
+    shm_pool_->GetMemoryPoolManager()->SetPoolAddress(
+        hip_pool_message_ptr->device_id, nullptr);
+  }
+
+  if (has_exception) {
+    LOG_INFO << "Failed to initialize CUDA shared memory pool in Python stub: "
+             << error_string;
+    hip_pool_message_ptr->has_error = true;
+    hip_pool_message_ptr->is_error_set = false;
+
+    LOG_IF_EXCEPTION(
+        error_string_shm = PbString::Create(shm_pool_, error_string));
+    if (error_string_shm != nullptr) {
+      hip_pool_message_ptr->is_error_set = true;
+      hip_pool_message_ptr->error = error_string_shm->ShmHandle();
+    }
+  }
+
+  {
+    bi::scoped_lock<bi::interprocess_mutex> lock{
+        *(ipc_message->ResponseMutex())};
+    hip_pool_message_ptr->waiting_on_stub = true;
+    ipc_message->ResponseCondition()->notify_all();
+    while (hip_pool_message_ptr->waiting_on_stub) {
       ipc_message->ResponseCondition()->wait(lock);
     }
   }

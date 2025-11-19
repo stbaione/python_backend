@@ -35,6 +35,10 @@
 #include <cuda_runtime_api.h>
 #endif  // TRITON_ENABLE_GPU
 
+#ifdef TRITON_ENABLE_AMD_GPU
+#include <hip/hip_runtime_api.h>
+#endif  // TRITON_ENABLE_AMD_GPU
+
 namespace triton { namespace backend { namespace python {
 
 //
@@ -79,7 +83,13 @@ class PbMemory {
 #ifdef TRITON_ENABLE_GPU
   void SetCudaIpcHandle(cudaIpcMemHandle_t* cuda_ipc_handle);
 
-  void UpdateCUDAOffset(std::unique_ptr<CUDAMemoryPoolManager>& cuda_pool);
+  void UpdateCUDAOffset(std::unique_ptr<MemoryPoolManager>& cuda_pool);
+#endif
+
+#ifdef TRITON_ENABLE_AMD_GPU
+  void SetHipIpcHandle(hipIpcMemHandle_t* hip_ipc_handle);
+
+  void UpdateHIPOffset(std::unique_ptr<HIPMemoryPoolManager>& hip_pool);
 #endif
 
   // Copy the destination buffer to the source buffer.
@@ -126,7 +136,7 @@ class PbMemory {
 
   void SetMemoryReleaseCallback(std::function<void(void)> release_callback);
 
-  bool UseCUDASharedPool() const
+  bool UseSharedPool() const
   {
     return memory_shm_ptr_->use_cuda_shared_pool;
   }
@@ -175,8 +185,21 @@ class PbMemory {
 
 #endif
 
+#ifdef TRITON_ENABLE_AMD_GPU
+  /// Calculate the pointer offset from the base address.
+  /// \return The offset of a device pointer.
+  /// \throws PythonBackendException if the tensor is stored in CPU.
+  uint64_t GetGPUPointerOffset();
+
+  /// Get the GPU start address.
+  /// \return The start address of a device pointer.
+  /// \throws PythonBackendException if the tensor is stored in CPU.
+  void* GetGPUStartAddress();
+
+#endif
+
   static void FillShmData(
-      std::unique_ptr<CUDAMemoryPoolManager>& cuda_pool,
+      std::unique_ptr<MemoryPoolManager>& cuda_pool,
       TRITONSERVER_MemoryType memory_type, int64_t memory_type_id,
       uint64_t byte_size, char* data, char* data_shm,
       bi::managed_external_buffer::handle_t handle, bool copy_gpu = true);

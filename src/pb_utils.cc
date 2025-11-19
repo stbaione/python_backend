@@ -49,6 +49,10 @@ extern char** environ;
 #include <cuda_runtime_api.h>
 #endif
 
+#ifdef TRITON_ENABLE_AMD_GPU
+#include <hip/hip_runtime.h>
+#endif
+
 namespace triton { namespace backend { namespace python {
 
 #ifdef TRITON_ENABLE_GPU
@@ -281,7 +285,7 @@ ScopedSetDevice::~ScopedSetDevice()
 
 bool
 IsUsingCUDAPool(
-    std::unique_ptr<CUDAMemoryPoolManager>& cuda_pool, int64_t memory_type_id,
+    std::unique_ptr<MemoryPoolManager>& cuda_pool, int64_t memory_type_id,
     void* data)
 {
   CUDAHandler& cuda_api = CUDAHandler::getInstance();
@@ -291,11 +295,256 @@ IsUsingCUDAPool(
       reinterpret_cast<CUdeviceptr>(data));
 
   return (
-      cuda_pool->CUDAPoolAddress(memory_type_id) ==
+      cuda_pool->PoolAddress(memory_type_id) ==
       reinterpret_cast<void*>(cuda_pool_address));
 }
 
 #endif  // TRITON_ENABLE_GPU
+
+#ifdef TRITON_ENABLE_AMD_GPU
+
+HIPHandler::HIPHandler()
+{
+  dl_open_handle_ = LoadSharedObject("libamdhip64.so");
+
+  // If libamdhip64.so is successfully opened, it must be able to find
+  // "hipPointerGetAttribute", "hipGetErrorString", and
+  // "hipDevicePrimaryCtxGetState" symbols.
+  if (dl_open_handle_ != nullptr) {
+    void* hip_pointer_get_attribute_fn = LocateSymbol("hipPointerGetAttribute");
+    if (hip_pointer_get_attribute_fn == nullptr) {
+      throw PythonBackendException(
+          std::string("Failed to locate 'hipPointerGetAttribute'. Error: ") +
+          LocateSymbolError());
+    }
+    *((void**)&hip_pointer_get_attribute_fn_) = hip_pointer_get_attribute_fn;
+
+    void* hip_get_error_string_fn = LocateSymbol("hipGetErrorString");
+    if (hip_get_error_string_fn == nullptr) {
+      throw PythonBackendException(
+          std::string("Failed to locate 'hipGetErrorString'. Error: ") +
+          LocateSymbolError());
+    }
+    *((void**)&hip_get_error_string_fn_) = hip_get_error_string_fn;
+
+    void* hip_init_fn = LocateSymbol("hipInit");
+    if (hip_init_fn == nullptr) {
+      throw PythonBackendException(
+          std::string("Failed to locate 'hipInit'. Error: ") +
+          LocateSymbolError());
+    }
+    *((void**)&hip_init_fn_) = hip_init_fn;
+
+    void* hip_device_primary_ctx_get_state_fn =
+        LocateSymbol("hipDevicePrimaryCtxGetState");
+    if (hip_device_primary_ctx_get_state_fn == nullptr) {
+      throw PythonBackendException(
+          std::string(
+              "Failed to locate 'hipDevicePrimaryCtxGetState'. Error: ") +
+          LocateSymbolError());
+    }
+    *((void**)&hip_device_primary_ctx_get_state_fn_) =
+        hip_device_primary_ctx_get_state_fn;
+    // Initialize the driver API.
+    hipError_t hip_err = (*hip_init_fn_)(0 /* flags */);
+    if (hip_err != HIP_SUCCESS) {
+      const char* error_string;
+      (*hip_get_error_string_fn_)(hip_err, &error_string);
+      error_str_ = std::string("failed to call hipInit: ") + error_string;
+      CloseLibrary();
+      dl_open_handle_ = nullptr;
+    }
+  }
+}
+
+void
+HIPHandler::PointerGetAttribute(
+    CUdeviceptr* start_address, CUpointer_attribute attribute,
+    CUdeviceptr dev_ptr)
+{
+  hipError_t hip_err =
+      (*hip_pointer_get_attribute_fn_)(start_address, attribute, dev_ptr);
+  if (hip_err != HIP_SUCCESS) {
+    const char* error_string;
+    (*hip_get_error_string_fn_)(hip_err, &error_string);
+    throw PythonBackendException(
+        std::string(
+            "failed to get cuda pointer device attribute: " +
+            std::string(error_string))
+            .c_str());
+  }
+}
+
+bool
+HIPHandler::IsAvailable()
+{
+  return dl_open_handle_ != nullptr;
+}
+
+void
+HIPHandler::OpenHipHandle(
+    int64_t memory_type_id, hipIpcMemHandle_t* hip_mem_handle,
+    void** data_ptr)
+{
+  std::lock_guard<std::mutex> guard{mu_};
+  ScopedSetDevice scoped_set_device(memory_type_id);
+
+  hipError_t err = hipIpcOpenMemHandle(
+      data_ptr, *hip_mem_handle, hipIpcMemLazyEnablePeerAccess);
+  if (err != hipSuccess) {
+    throw PythonBackendException(
+        std::string("Failed to open the cudaIpcHandle. error: ") +
+        hipGetErrorString(err));
+  }
+}
+
+void
+HIPHandler::CloseHipHandle(int64_t memory_type_id, void* data_ptr)
+{
+  std::lock_guard<std::mutex> guard{mu_};
+  int current_device;
+
+  // Save the previous device
+  hipError_t err = hipGetDevice(&current_device);
+  if (err != hipSuccess) {
+    throw PythonBackendException(
+        std::string("Failed to get the current HIP device. error: ") +
+        hipGetErrorString(err));
+  }
+
+  // Restore the previous device before returning from the function.
+  ScopedSetDevice scoped_set_device(memory_type_id);
+  err = hipIpcCloseMemHandle(data_ptr);
+  if (err != hipSuccess) {
+    throw PythonBackendException(
+        std::string("Failed to close the hipIpcHandle. error: ") +
+        hipGetErrorString(err));
+  }
+}
+
+bool
+HIPHandler::HasPrimaryContext(int device)
+{
+  unsigned int ctx_flags;
+  int ctx_is_active = 0;
+  hipError_t hip_err = (*hip_device_primary_ctx_get_state_fn_)(
+      device, &ctx_flags, &ctx_is_active);
+  if (hip_err != HIP_SUCCESS) {
+    const char* error_string;
+    (*hip_get_error_string_fn_)(hip_err, &error_string);
+    throw PythonBackendException(
+        std::string(
+            "failed to get primary context state: " + std::string(error_string))
+            .c_str());
+  }
+
+  return ctx_is_active == 1;
+}
+
+void
+HIPHandler::MaybeSetDevice(int device)
+{
+  if (HasPrimaryContext(device)) {
+    hipError_t err = hipSetDevice(device);
+    if (err != hipSuccess) {
+      throw PythonBackendException(
+          std::string("Failed to set the HIP device to ") +
+          std::to_string(device) + ". error: " + hipGetErrorString(err));
+    }
+  }
+}
+
+
+HIPHandler::~HIPHandler() noexcept(false)
+{
+  if (dl_open_handle_ != nullptr) {
+    CloseLibrary();
+  }
+}
+
+void*
+HIPHandler::LoadSharedObject(const char* filename)
+{
+#ifdef _WIN32
+  // NOTE: 'nvcuda.dll' is a placeholder library. Apparently, this should be the
+  // equivalent library for Windows, but need to verify.
+  return LoadLibraryA("nrvml64.dll");
+#else
+  return dlopen("librocm.so", RTLD_LAZY);
+#endif
+}
+
+void*
+HIPHandler::LocateSymbol(const char* symbol)
+{
+#ifdef _WIN32
+  return GetProcAddress(static_cast<HMODULE>(dl_open_handle_), symbol);
+#else
+  return dlsym(dl_open_handle_, symbol);
+#endif
+}
+
+
+std::string
+HIPHandler::LocateSymbolError()
+{
+#ifdef _WIN32
+  return std::to_string(GetLastError());
+#else
+  return dlerror();
+#endif
+}
+
+void
+HIPHandler::CloseLibrary()
+{
+  bool successful = true;
+#ifdef _WIN32
+  successful = (FreeLibrary(static_cast<HMODULE>(dl_open_handle_)) != 0);
+#else
+  successful = (dlclose(dl_open_handle_) == 0);
+#endif
+  if (!successful) {
+    throw PythonBackendException("Failed to close the hip library handle.");
+  }
+}
+
+
+ScopedSetDevice::ScopedSetDevice(int device)
+{
+  device_ = device;
+  THROW_IF_HIP_ERROR(hipGetDevice(&current_device_));
+
+  if (current_device_ != device_) {
+    THROW_IF_HIP_ERROR(hipSetDevice(device_));
+  }
+}
+
+ScopedSetDevice::~ScopedSetDevice()
+{
+  if (current_device_ != device_) {
+    HIPHandler& hip_handler = HIPHandler::getInstance();
+    hip_handler.MaybeSetDevice(current_device_);
+  }
+}
+
+bool
+IsUsingHIPPool(
+    std::unique_ptr<MemoryPoolManager>& hip_pool, int64_t memory_type_id,
+    void* data)
+{
+  HIPHandler& hip_api = HIPHandler::getInstance();
+  hipDevicePtr_t hip_pool_address = 0;
+  hip_api.PointerGetAttribute(
+      &hip_pool_address, HIP_POINTER_ATTRIBUTE_RANGE_START_ADDR,
+      reinterpret_cast<hipDevicePtr_t>(data));
+
+  return (
+      hip_pool->PoolAddress(memory_type_id) ==
+      reinterpret_cast<void*>(hip_pool_address));
+}
+
+#endif  // TRITON_ENABLE_AMD_GPU
 
 // FIXME: [DLIS-6078]: We should not need this function. However, some paths are
 // being retrieved from core that are not platform-agnostic.

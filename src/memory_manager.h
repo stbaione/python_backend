@@ -40,6 +40,9 @@
 #include <cuda_runtime_api.h>
 #endif  // TRITON_ENABLE_GPU
 
+#ifdef TRITON_ENABLE_AMD_GPU
+#include <hip/hip_runtime_api.h>
+#endif  // TRITON_ENABLE_AMD_GPU
 
 namespace triton { namespace backend { namespace python {
 
@@ -51,6 +54,20 @@ class MemoryRecord {
 };
 
 #ifdef TRITON_ENABLE_GPU
+class BackendMemoryRecord : public MemoryRecord {
+ public:
+  BackendMemoryRecord(std::unique_ptr<BackendMemory> backend_memory);
+  const std::function<void(void*)>& ReleaseCallback() override;
+  void* MemoryId() override;
+  ~BackendMemoryRecord() { backend_memory_.reset(); }
+
+ private:
+  std::unique_ptr<BackendMemory> backend_memory_;
+  std::function<void(void*)> release_callback_;
+};
+#endif
+
+#ifdef TRITON_ENABLE_AMD_GPU
 class BackendMemoryRecord : public MemoryRecord {
  public:
   BackendMemoryRecord(std::unique_ptr<BackendMemory> backend_memory);

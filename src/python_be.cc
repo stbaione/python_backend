@@ -403,6 +403,19 @@ ModelInstanceState::GetInputTensor(
     cuda_handler.ClearErrorString();
     cpu_only_tensors = true;
   }
+#elif defined(TRITON_ENABLE_AMD_GPU)
+  HIPhandler& hip_handler = HIPhandler::getInstance();
+  if (!hip_handler.IsAvailable() && !cpu_only_tensors) {
+    if (!hip_handler.GetErrorString().empty()) {
+      LOG_MESSAGE(
+          TRITONSERVER_LOG_WARN, (std::string(
+                                      "Forcing CPU only input tensors: " +
+                                      hip_handler.GetErrorString()))
+                                     .c_str());
+    }
+    hip_handler.ClearErrorString();
+    cpu_only_tensors = true;
+  }
 #endif
 
   TRITONSERVER_MemoryType src_memory_type;
@@ -415,9 +428,9 @@ ModelInstanceState::GetInputTensor(
 
 // If TRITON_ENABLE_GPU is false, we need to copy the tensors
 // to the CPU.
-#ifndef TRITON_ENABLE_GPU
+#if !defined(TRITON_ENABLE_GPU) && !defined(TRITON_ENABLE_AMD_GPU)
   cpu_only_tensors = true;
-#endif  // TRITON_ENABLE_GPU
+#endif
 
   if (cpu_only_tensors || src_memory_type != TRITONSERVER_MEMORY_GPU) {
     input_tensor = std::make_shared<PbTensor>(
@@ -511,7 +524,7 @@ ModelInstanceState::GetInputTensor(
           reinterpret_cast<TRITONBACKEND_MemoryManager*>(
               Stub()
                   ->ShmPool()
-                  ->GetCUDAMemoryPoolManager()
+                  ->GetMemoryPoolManager()
                   ->TritonMemoryManager()),
           {BackendMemory::AllocationType::GPU_POOL,
            BackendMemory::AllocationType::GPU},
@@ -552,6 +565,96 @@ ModelInstanceState::GetInputTensor(
         TRITONSERVER_ERROR_INTERNAL,
         "Python backend does not support GPU tensors.");
 #endif  // TRITON_ENABLE_GPU
+
+#ifdef TRITON_ENABLE_AMD_GPU
+  ShareHIPMemoryPool(src_memory_type_id);
+
+  const void* buffer = nullptr;
+  std::vector<std::pair<TRITONSERVER_MemoryType, int64_t>> alloc_perference;
+  alloc_perference = {{TRITONSERVER_MEMORY_GPU, src_memory_type_id}};
+
+  if (collector) {
+    RETURN_IF_ERROR(collector->ProcessTensor(
+          input_name, nullptr, 0, alloc_perference,
+          reinterpret_cast<const char**>(&buffer), &input_byte_size,
+          &src_memory_type, &src_memory_type_id));
+
+    TRITONSERVER_BufferAttributes* buffer_attributes;
+
+    // This value is not used.
+    const void* buffer_p;
+    RETURN_IF_ERROR(TRITONBACKEND_InputBufferAttributes(
+        in, 0, &buffer_p, &buffer_attributes));
+
+    input_tensor = std::make_shared<PbTensor>(
+        std::string(input_name),
+        std::vector<int64_t>(input_shape, input_shape + input_dims_count),
+        input_dtype, src_memory_type, src_memory_type_id,
+        const_cast<void*>(buffer), input_byte_size,
+        nullptr /* DLManagedTensor */);
+
+    hipIpcMemHandle_t* hip_ipc_handle;
+    RETURN_IF_ERROR(TRITONSERVER_BufferAttributesHipIpcHandle(
+        buffer_attributes, reinterpret_cast<void**>(&cuda_ipc_handle)));
+    if (cuda_ipc_handle != nullptr) {
+      RETURN_IF_EXCEPTION(input_tensor->SaveToSharedMemory(
+          Stub()->ShmPool(), false /* copy_gpu */));
+      RETURN_IF_EXCEPTION(
+          input_tensor->Memory()->SetHipIpcHandle(hip_ipc_handle));
+    } else {
+      RETURN_IF_EXCEPTION(input_tensor->SaveToSharedMemory(
+          Stub()->ShmPool(), true /* copy_gpu */));
+    }
+  } else {
+    void* dev_ptr;
+    BackendMemory* backend_memory;
+    std::unique_ptr<BackendMemory> lbackend_memory;
+    RETURN_IF_ERROR(BackendMemory::Create(
+          reinterpret_cast<TRITONBACKEND_MemoryManager*>(
+              Stub()
+                  ->ShmPool()
+                  ->GetHIPMemoryPoolManager()
+                  ->TritonMemoryManager()),
+          {BackendMemory::AllocationType::GPU_POOL,
+           BackendMemory::AllocationType::GPU},
+          src_memory_type_id, input_byte_size, &backend_memory));
+
+    dev_ptr = backend_memory->MemoryPtr();
+    lbackend_memory.reset(backend_memory);
+
+    size_t byte_size = input_byte_size;
+
+    bool hip_used = false;
+    RETURN_IF_ERROR(backend::ReadInputTensor(
+        request, input_name, reinterpret_cast<char*>(dev_ptr), &byte_size,
+        TRITONSERVER_MEMORY_GPU, src_memory_type_id, HipStream(),
+        &hip_used));
+
+    if (hip_used) {
+#ifdef TRITON_ENABLE_AMD_GPU
+      hipStreamSynchronize(stream_);
+#endif
+    }
+
+    input_tensor = std::make_shared<PbTensor>(
+          std::string(input_name),
+          std::vector<int64_t>(input_shape, input_shape + input_dims_count),
+          input_dtype, src_memory_type, src_memory_type_id,
+          const_cast<void*>(dev_ptr), input_byte_size,
+          nullptr /* DLManagedTensor */);
+
+    input_tensor->SetMemory(std::move(
+        PbMemory::Create(Stub()->ShmPool(), std::move(lbackend_memory))));
+
+    RETURN_IF_EXCEPTION(input_tensor->SaveToSharedMemory(
+        Stub()->ShmPool(), true /* copy_gpu */));
+    }
+#else
+    return TRITONSERVER_ErrorNew(
+      TRITONSERVER_ERROR_INTERNAL,
+      "Python backend does not support GPU tensors."
+    );
+#endif
   }
 
   return nullptr;
@@ -628,6 +731,27 @@ ModelInstanceState::ExecuteBLSRequest(
                 Stub()->ShmPool(), std::move(lbackend_memory))));
             gpu_buffer_helper.AddBuffer(input_tensor->Memory()->ShmHandle());
 #endif  // TRITON_ENABLE_GPU
+#ifdef TRITON_ENABLE_AMD_GPU
+            ShareHIPMemoryPool(input_tensor->MemoryTypeId());
+            BackendMemory* backend_memory;
+            std::unique_ptr<BackendMemory> lbackend_memory;
+            has_gpu_tensor = true;
+            TRITONSERVER_Error* error = BackendMemory::Create(
+                Model()->TritonMemoryManager(),
+                {BackendMemory::AllocationType::GPU_POOL,
+                 BackendMemory::AllocationType::GPU},
+                input_tensor->MemoryTypeId(), input_tensor->ByteSize(),
+                &backend_memory);
+            if (error != nullptr) {
+              LOG_MESSAGE(
+                  TRITONSERVER_LOG_ERROR, TRITONSERVER_ErrorMessage(error));
+              break;
+            }
+            lbackend_memory.reset(backend_memory);
+            input_tensor->SetMemory(std::move(PbMemory::Create(
+                Stub()->ShmPool(), std::move(lbackend_memory))));
+            gpu_buffer_helper.AddBuffer(input_tensor->Memory()->ShmHandle());
+#endif
           }
         }
       }
@@ -1248,6 +1372,14 @@ ModelInstanceState::ResponseSendDecoupled(
       }
     }
 #endif  // TRITON_ENABLE_GPU
+#ifdef TRITON_ENABLE_AMD_GPU
+    for (auto& output_tensor : infer_response->OutputTensors()) {
+      if (!output_tensor->IsCPU()) {
+        // Attempt to use the hip shared memory pool for GPU tensor.
+        ShareHIPMemoryPool(output_tensor->MemoryTypeId());
+      }
+    }
+#endif
 
     infer_response->Send(
         response, CudaStream(), requires_deferred_callback,
@@ -1285,7 +1417,7 @@ ModelInstanceState::ResponseSendDecoupled(
             cuda_copy |= cuda_used;
           } else if (
               (pb_memory->MemoryType() == TRITONSERVER_MEMORY_GPU) &&
-              pb_memory->UseCUDASharedPool() &&
+              pb_memory->UseSharedPool() &&
               (pb_memory->DataPtr() != pointer)) {
             // If the data pointer from pb_memory is not the same as the
             // pointer, it means that the Triton-provided buffer is not used
@@ -1306,6 +1438,11 @@ ModelInstanceState::ResponseSendDecoupled(
             cudaStreamSynchronize(stream_);
           }
 #endif  // TRITON_ENABLE_GPU
+#ifdef TRITON_ENABLE_AMD_GPU
+          if (cuda_copy) {
+            hipStreamSynchronize(stream_);
+          }
+#endif  // TRITON_ENABLE_AMD_GPU
         }
         catch (const PythonBackendException& pb_exception) {
           TRITONSERVER_Error* error = TRITONSERVER_ErrorNew(
@@ -1548,6 +1685,14 @@ ModelInstanceState::ProcessRequests(
         }
       }
 #endif  // TRITON_ENABLE_GPU
+#ifdef TRITON_ENABLE_AMD_GPU
+      for (auto& output_tensor : infer_response->OutputTensors()) {
+        if (output_tensor->MemoryType() == TRITONSERVER_MEMORY_GPU) {
+          // Attempt to use the hip shared memory pool for GPU tensor.
+          ShareHIPMemoryPool(output_tensor->MemoryTypeId());
+        }
+      }
+#endif
 
       gpu_output_buffers[r] =
           std::vector<std::pair<std::unique_ptr<PbMemory>, void*>>{};
@@ -1596,7 +1741,7 @@ ModelInstanceState::ProcessRequests(
             cuda_copy |= cuda_used;
           } else if (
               (pb_memory->MemoryType() == TRITONSERVER_MEMORY_GPU) &&
-              pb_memory->UseCUDASharedPool() &&
+              pb_memory->UseSharedPool() &&
               (pb_memory->DataPtr() != pointer)) {
             // If the data pointer from pb_memory is not the same as the
             // pointer, it means that the Triton-provided buffer is not used
@@ -1621,6 +1766,11 @@ ModelInstanceState::ProcessRequests(
           cudaStreamSynchronize(stream_);
         }
 #endif  // TRITON_ENABLE_GPU
+#ifdef TRITON_ENABLE_AMD_GPU
+        if (cuda_copy) {
+          hipStreamSynchronize(stream_);
+        }
+#endif  // TRITON_ENABLE_AMD_GPU
       }
     }
 
@@ -1672,19 +1822,41 @@ ModelInstanceState::PrepareResponseHandle(
       // CUDA memory pool hasn't been shared with the stub process at the time
       // the BLS output is allocated during the ResponseAlloc callback. In such
       // cases, we need to adjust the CUDA pool offset accordingly.
-      if (!output_tensor->Memory()->UseCUDASharedPool()) {
+      if (!output_tensor->Memory()->UseSharedPool()) {
         output_tensor->Memory()->UpdateCUDAOffset(
-            Stub()->ShmPool()->GetCUDAMemoryPoolManager());
+            Stub()->ShmPool()->GetMemoryPoolManager());
       }
     }
   }
 #endif  // TRITON_ENABLE_GPU
+#ifdef TRITON_ENABLE_AMD_GPU
+  for (auto& output_tensor : (*infer_response)->OutputTensors()) {
+    if (!output_tensor->IsCPU()) {
+      // Attempt to use the hip shared memory pool for GPU tensor.
+      ShareHIPMemoryPool(output_tensor->MemoryTypeId());
+      if (!output_tensor->Memory()->UseHIPSharedPool()) {
+        output_tensor->Memory()->UpdateHIPOffset(
+            Stub()->ShmPool()->GetHIPMemoryPoolManager());
+      }
+    }
+  }
+#endif
 
   (*infer_response)->SaveToSharedMemory(Stub()->ShmPool());
 
   for (auto& output_tensor : (*infer_response)->OutputTensors()) {
     if (!output_tensor->IsCPU()) {
 #ifdef TRITON_ENABLE_GPU
+      std::unique_ptr<MemoryRecord> memory_record;
+      // Need to transfer the ownership of the BackendMemory to the
+      // MemoryManager so that the lifetime of the BackendMemory is managed.
+      memory_record = std::make_unique<BackendMemoryRecord>(
+          output_tensor->Memory()->GetBackendMemory());
+      uint64_t memory_release_id =
+          Stub()->GetMemoryManager()->AddRecord(std::move(memory_record));
+      output_tensor->Memory()->SetMemoryReleaseId(memory_release_id);
+#endif
+#ifdef TRITON_ENABLE_AMD_GPU
       std::unique_ptr<MemoryRecord> memory_record;
       // Need to transfer the ownership of the BackendMemory to the
       // MemoryManager so that the lifetime of the BackendMemory is managed.
@@ -1763,6 +1935,23 @@ ModelInstanceState::ShareCUDAMemoryPool(const int32_t device_id)
             .c_str());
   }
 #endif  // TRITON_ENABLE_GPU
+}
+
+void
+ModelInstanceState::ShareHIPMemoryPool(const int32_t device_id)
+{
+#ifdef TRITON_ENABLE_AMD_GPU
+  try {
+    Stub()->ShareHIPMemoryPool(Model()->TritonMemoryManager(), device_id);
+  }
+  catch (const PythonBackendException& ex) {
+    LOG_MESSAGE(
+        TRITONSERVER_LOG_WARN,
+        (std::string("Failed to share HIP memory pool with stub process: ") +
+         ex.what() + ". Will use HIP IPC.")
+            .c_str());
+  }
+#endif // TRITON_ENABLE_AMD_GPU
 }
 
 ModelInstanceState::~ModelInstanceState()
@@ -2446,6 +2635,9 @@ TRITONBACKEND_GetBackendAttribute(
   // Other instance groups setting are set to "no value" so that Triton core
   // will auto-complete them with default policy.
 #ifdef TRITON_ENABLE_GPU
+  RETURN_IF_ERROR(TRITONBACKEND_BackendAttributeAddPreferredInstanceGroup(
+      backend_attributes, TRITONSERVER_INSTANCEGROUPKIND_GPU, 0, nullptr, 0));
+#elif defined(TRITON_ENABLE_AMD_GPU)
   RETURN_IF_ERROR(TRITONBACKEND_BackendAttributeAddPreferredInstanceGroup(
       backend_attributes, TRITONSERVER_INSTANCEGROUPKIND_GPU, 0, nullptr, 0));
 #else

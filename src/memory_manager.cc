@@ -53,6 +53,27 @@ BackendMemoryRecord::ReleaseCallback()
 {
   return release_callback_;
 }
+#elif defined(TRITON_ENABLE_AMD_GPU)
+BackendMemoryRecord::BackendMemoryRecord(
+    std::unique_ptr<BackendMemory> backend_memory)
+    : backend_memory_(std::move(backend_memory))
+{
+  release_callback_ = [](void* ptr) {
+    // Do nothing. The backend_memory_ will be destroyed in the destructor.
+  };
+}
+
+void*
+BackendMemoryRecord::MemoryId()
+{
+  return reinterpret_cast<void*>(backend_memory_->MemoryPtr());
+}
+
+const std::function<void(void*)>&
+BackendMemoryRecord::ReleaseCallback()
+{
+  return release_callback_;
+}
 #endif
 
 MemoryManager::MemoryManager(

@@ -271,7 +271,7 @@ ResponseAlloc(
   } else {
     switch (*actual_memory_type) {
       case TRITONSERVER_MEMORY_CPU:
-#ifndef TRITON_ENABLE_GPU
+#if !defined(TRITON_ENABLE_GPU) && !defined(TRITON_ENABLE_AMD_GPU)
       case TRITONSERVER_MEMORY_GPU:
 #endif
       case TRITONSERVER_MEMORY_CPU_PINNED: {
@@ -292,14 +292,14 @@ ResponseAlloc(
         }
 
       } break;
-#ifdef TRITON_ENABLE_GPU
+#if defined(TRITON_ENABLE_GPU) || defined(TRITON_ENABLE_AMD_GPU)
       case TRITONSERVER_MEMORY_GPU: {
         BackendMemory* backend_memory;
         std::unique_ptr<BackendMemory> lbackend_memory;
         try {
           THROW_IF_TRITON_ERROR(BackendMemory::Create(
               reinterpret_cast<TRITONBACKEND_MemoryManager*>(
-                  shm_pool->GetCUDAMemoryPoolManager()->TritonMemoryManager()),
+                  shm_pool->GetMemoryPoolManager()->TritonMemoryManager()),
               {BackendMemory::AllocationType::GPU_POOL,
                BackendMemory::AllocationType::GPU},
               *actual_memory_type_id, byte_size, &backend_memory));

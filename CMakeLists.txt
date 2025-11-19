@@ -38,6 +38,7 @@ set(TRITON_MIN_CXX_STANDARD 17 CACHE STRING "The minimum C++ standard which feat
 # projects included in this one by FetchContent.
 #
 option(TRITON_ENABLE_GPU "Enable GPU support in backend" ON)
+option(TRITON_ENABLE_AMD_GPU "Enable AMD GPU support in backend" OFF)
 option(TRITON_ENABLE_STATS "Include statistics collections in backend" ON)
 option(TRITON_ENABLE_NVTX "Include nvtx markers collection in backend." OFF)
 
@@ -45,6 +46,7 @@ option(TRITON_ENABLE_NVTX "Include nvtx markers collection in backend." OFF)
 # support GPU tensors. For simplicity, we will override this option here.
 if(WIN32)
   set(TRITON_ENABLE_GPU OFF CACHE BOOL "GPU disabled" FORCE)
+  set(TRITON_ENABLE_AMD_GPU OFF CACHE BOOL "AMD GPU disabled" FORCE)
 endif()
 
 set(TRITON_REPO_ORGANIZATION "https://github.com/triton-inference-server" CACHE STRING "Git repository to pull from")
@@ -146,6 +148,18 @@ if(${TRITON_ENABLE_GPU})
 elseif()
   message(WARNING "TRITON_ENABLE_GPU is OFF, GPU Tensor support will be disabled")
 endif() # TRITON_ENABLE_GPU
+
+#
+# HIP
+#
+if(${TRITON_ENABLE_AMD_GPU})
+  set(CMAKE_PREFIX_PATH "/opt/rocm" ${CMAKE_PREFIX_PATH})
+  find_package(hip REQUIRED)
+  message(STATUS "Using ROCm HIP ${hip_VERSION}")
+  set(HIP_HIPCC_FLAGS -std=c++${TRITON_MIN_CXX_STANDARD})
+elseif()
+  message(WARNING "TRITON_ENABLE_AMD_GPU is OFF, AMD GPU Tensor support will be disabled")
+endif() # TRITON_ENABLE_AMD_GPU
 
 if(${TRITON_ENABLE_NVTX})
   add_definitions(-DTRITON_ENABLE_NVTX=1)

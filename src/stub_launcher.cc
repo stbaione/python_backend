@@ -935,9 +935,9 @@ StubLauncher::ShareCUDAMemoryPool(
         &cuda_pool_address, CU_POINTER_ATTRIBUTE_RANGE_START_ADDR,
         reinterpret_cast<CUdeviceptr>(lbackend_memory->MemoryPtr()));
 
-    shm_pool_->GetCUDAMemoryPoolManager()->SetCUDAPoolAddress(
+    shm_pool_->GetMemoryPoolManager()->SetPoolAddress(
         device_id, reinterpret_cast<void*>(cuda_pool_address));
-    shm_pool_->GetCUDAMemoryPoolManager()->SetTritonMemoryManager(
+    shm_pool_->GetMemoryPoolManager()->SetTritonMemoryManager(
         reinterpret_cast<void*>(triton_mem_manager));
 
     // Get the memory handle from the CUDA memory pool.
@@ -949,8 +949,8 @@ StubLauncher::ShareCUDAMemoryPool(
       THROW_IF_CUDA_ERROR(cudaIpcGetMemHandle(
           reinterpret_cast<cudaIpcMemHandle_t*>(
               &cuda_pool_message_ptr->cuda_handle),
-          reinterpret_cast<char*>(shm_pool_->GetCUDAMemoryPoolManager()
-                                      ->CUDAPoolAddress(device_id))));
+          reinterpret_cast<char*>(shm_pool_->GetMemoryPoolManager()
+                                      ->PoolAddress(device_id))));
     }
 
     ipc_message->Command() = PYTHONSTUB_CUDAPoolInitializeRequest;
@@ -984,7 +984,7 @@ StubLauncher::ShareCUDAMemoryPool(
     }
   }
   catch (const PythonBackendException& exception) {
-    shm_pool_->GetCUDAMemoryPoolManager()->SetCUDAPoolAddress(
+    shm_pool_->GetMemoryPoolManager()->SetPoolAddress(
         device_id, nullptr);
     pb_exception = exception;
   }
@@ -1002,5 +1002,104 @@ StubLauncher::ShareCUDAMemoryPool(
     throw pb_exception;
   }
 }
-#endif  // TRITON_ENABLE_GPU
+#elif defined(TRITON_ENABLE_AMD_GPU)
+void
+StubLauncher::ShareHIPMemoryPool(
+    TRITONBACKEND_MemoryManager* triton_mem_manager, const int32_t device_id)
+{
+  std::lock_guard<std::mutex> lock(hip_shm_pool_mutex_);
+  if ((tried_sharing_hip_pool_map_.find(device_id) !=
+       tried_sharing_hip_pool_map_.end()) &&
+      tried_sharing_hip_pool_map_[device_id]) {
+    return;
+  }
+
+  std::unique_ptr<IPCMessage> ipc_message =
+      IPCMessage::Create(shm_pool_, true /* inline_response */);
+  HIPMemPoolMessage* hip_pool_message_ptr = nullptr;
+  PythonBackendException pb_exception(std::string{});
+
+  try {
+    // Create a dummy BackendMemory object to get the start address of the CUDA
+    // memory pool.
+    BackendMemory* backend_memory;
+    std::unique_ptr<BackendMemory> lbackend_memory;
+
+    THROW_IF_TRITON_ERROR(BackendMemory::Create(
+        triton_mem_manager, BackendMemory::AllocationType::GPU_POOL, device_id,
+        1 /* byte size*/, &backend_memory));
+    lbackend_memory.reset(backend_memory);
+
+    HIPHandler& hip_api = HIPHandler::getInstance();
+    hipDeviceptr_t hip_pool_address = 0;
+    hip_api.PointerGetAttribute(
+        &hip_pool_address, HIP_POINTER_ATTRIBUTE_RANGE_START_ADDR,
+        reinterpret_cast<hipDeviceptr_t>(lbackend_memory->MemoryPtr()));
+    shm_pool_->GetMemoryPoolManager()->SetPoolAddress(
+        device_id, reinterpret_cast<void*>(hip_pool_address));
+    shm_pool_->GetMemoryPoolManager()->SetTritonMemoryManager(
+        reinterpret_cast<void*>(triton_mem_manager));
+
+    // Get the memory handle from the HIP memory pool.
+    AllocatedSharedMemory<HIPMemPoolMessage> hip_pool_message =
+        shm_pool_->Construct<HIPMemPoolMessage>();
+    hip_pool_message_ptr = hip_pool_message.data_.get();
+    {
+      ScopedSetDevice scoped_set_device(device_id);
+      THROW_IF_HIP_ERROR(hipIpcGetMemHandle(
+          reinterpret_cast<hipIpcMemHandle_t*>(
+              &hip_pool_message_ptr->cuda_handle),
+          reinterpret_cast<char*>(shm_pool_->GetMemoryPoolManager()
+                                      ->PoolAddress(device_id))));
+    }
+
+    ipc_message->Command() = PYTHONSTUB_HIPPoolInitializeRequest;
+    ipc_message->Args() = hip_pool_message.handle_;
+
+    hip_pool_message_ptr->device_id = device_id;
+    hip_pool_message_ptr->has_error = false;
+    hip_pool_message_ptr->is_error_set = false;
+    hip_pool_message_ptr->waiting_on_stub = false;
+
+    {
+      bi::scoped_lock<bi::interprocess_mutex> lock{
+          *(ipc_message->ResponseMutex())};
+      parent_to_stub_mq_->Push(ipc_message->ShmHandle());
+      while (!hip_pool_message_ptr->waiting_on_stub) {
+        ipc_message->ResponseCondition()->wait(lock);
+      }
+    }
+
+    if (hip_pool_message_ptr->has_error) {
+      if (hip_pool_message_ptr->is_error_set) {
+        std::unique_ptr<PbString> error_message =
+            PbString::LoadFromSharedMemory(
+                shm_pool_, hip_pool_message_ptr->error);
+        throw PythonBackendException(error_message->String());
+      } else {
+        throw PythonBackendException(
+            "Failed to share HIP memory pool with stub process: " +
+            model_name_);
+      }
+    }
+  }
+  catch (const PythonBackendException& exception) {
+    shm_pool_->GetMemoryPoolManager()->SetPoolAddress(
+        device_id, nullptr);
+    pb_exception = exception;
+  }
+
+  {
+    bi::scoped_lock<bi::interprocess_mutex> lock{
+        *(ipc_message->ResponseMutex())};
+    hip_pool_message_ptr->waiting_on_stub = false;
+    ipc_message->ResponseCondition()->notify_all();
+  }
+
+  tried_sharing_hip_pool_map_[device_id] = true;
+  if (pb_exception.what() != std::string{""}) {
+    throw pb_exception;
+  }
+}
+#endif  // TRITON_ENABLE_AMD_GPU
 }}};    // namespace triton::backend::python

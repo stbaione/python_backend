@@ -30,6 +30,10 @@
 #include <cuda_runtime_api.h>
 #endif  // TRITON_ENABLE_GPU
 
+#ifdef TRITON_ENABLE_AMD_GPU
+#include <hip/hip_runtime_api.h>
+#endif
+
 #include <dlpack/dlpack.h>
 
 #ifdef TRITON_PB_STUB
