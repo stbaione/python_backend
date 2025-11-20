@@ -516,7 +516,7 @@ InferRequest::Exec(const bool is_decoupled)
             ++i;
           }
         }
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
         size_t i = 0;
         for (auto& input_tensor : this->Inputs()) {
           if (!input_tensor->IsCPU()) {

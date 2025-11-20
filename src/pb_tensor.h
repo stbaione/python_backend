@@ -30,7 +30,7 @@
 #include <cuda_runtime_api.h>
 #endif  // TRITON_ENABLE_GPU
 
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
 #include <hip/hip_runtime_api.h>
 #endif
 

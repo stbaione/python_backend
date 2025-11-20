@@ -40,7 +40,7 @@ PbMemory::Create(
   if (memory_type == TRITONSERVER_MEMORY_GPU) {
 #ifdef TRITON_ENABLE_GPU
     requested_byte_size += sizeof(cudaIpcMemHandle_t);
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
     requested_byte_size += sizeof(hipIpcMemHandle_t);
 #endif
   } else {
@@ -66,7 +66,7 @@ PbMemory::Create(
     pb_memory->memory_shm_ptr_->gpu_pointer_offset =
         pb_memory->GetGPUPointerOffset();
   }
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
   if (memory_type == TRITONSERVER_MEMORY_GPU) {
     pb_memory->memory_shm_ptr_->gpu_pointer_offset =
         pb_memory->GetGPUPointerOffset();
@@ -113,7 +113,7 @@ PbMemory::Create(
     pb_memory->memory_shm_ptr_->gpu_pointer_offset =
         pb_memory->GetGPUPointerOffset();
   }
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
   if (memory_type == TRITONSERVER_MEMORY_GPU) {
     pb_memory->memory_shm_ptr_->gpu_pointer_offset =
         pb_memory->GetGPUPointerOffset();
@@ -187,7 +187,7 @@ PbMemory::CopyBuffer(
               .c_str());
     }
   }
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
   hipMemcpyKind kind = hipMemcpyHostToDevice;
 
   if (src->MemoryType() == TRITONSERVER_MEMORY_CPU &&
@@ -264,7 +264,7 @@ PbMemory::FillShmData(
             reinterpret_cast<char*>(cuda_pool->PoolAddress(memory_type_id));
       }
     }
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
     if (data != nullptr) {
       if (copy_gpu) {
         ScopedSetDevice scoped_set_device(memory_type_id);
@@ -329,7 +329,7 @@ PbMemory::LoadFromSharedMemory(
            memory_shm_ptr->gpu_pointer_offset);
       opened_cuda_ipc_handle = true;
     }
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
     if (memory_shm_ptr->use_cuda_shared_pool) {
       // When CUDA shared memory pool is used, the stub will retrieve the
       // data pointer using the offset.
@@ -415,7 +415,7 @@ PbMemory::LoadFromSharedMemory(
              memory_shm_ptr->gpu_pointer_offset);
         opened_cuda_ipc_handle = true;
       }
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
       if (memory_shm_ptr->use_cuda_shared_pool) {
         // When CUDA shared memory pool is used, the stub will retrieve the
         // data pointer using the offset.
@@ -524,7 +524,7 @@ PbMemory::GetGPUPointerOffset()
   }
   return offset;
 }
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
 void*
 PbMemory::GetGPUStartAddress()
 {
@@ -630,7 +630,7 @@ PbMemory::UpdateCUDAOffset(std::unique_ptr<MemoryPoolManager>& cuda_pool)
     memory_shm_ptr_->use_cuda_shared_pool = true;
   }
 }
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
 void
 PbMemory::SetHipIpcHandle(hipIpcMemHandle_t* hip_ipc_handle)
 {
@@ -658,7 +658,7 @@ PbMemory::~PbMemory()
     cuda_handler.CloseCudaHandle(
         memory_shm_ptr_->memory_type_id, GetGPUStartAddress());
 #endif
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
     HIPHandler& hip_handler = HIPHandler::getInstance();
     hip_handler.CloseHipHandle(
         memory_shm_ptr_->memory_type_id, GetGPUStartAddress());

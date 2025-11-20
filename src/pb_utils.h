@@ -30,9 +30,9 @@
 #include <cuda.h>
 #endif  // TRITON_ENABLE_GPU
 
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
 #include <hip/hip_runtime.h>
-#endif // TRITON_ENABLE_AMD_GPU
+#endif // TRITON_ENABLE_ROCM
 
 #include <boost/interprocess/sync/interprocess_condition.hpp>
 #include <boost/interprocess/sync/interprocess_mutex.hpp>
@@ -351,7 +351,7 @@ bool IsUsingCUDAPool(
 
 #endif  // TRITON_ENABLE_GPU
 
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
 struct HIPMemPoolMessage : SendMessageBase {
   hipIpcMemHandle_t cuda_handle;
   int32_t device_id;

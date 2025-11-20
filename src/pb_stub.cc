@@ -67,7 +67,7 @@
 #include <cuda_runtime_api.h>
 #endif  // TRITON_ENABLE_GPU
 
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
 #include <hip/hip_runtime_api.h>
 #endif
 
@@ -77,13 +77,13 @@ namespace bi = boost::interprocess;
 // #ifndef TRITON_ENABLE_GPU
 // using cudaStream_t = void*;
 // #endif
-// #ifndef TRITON_ENABLE_AMD_GPU
+// #ifndef TRITON_ENABLE_ROCM
 // using hipStream_t = void*;
 // #endif
 
 #ifdef TRITON_ENABLE_GPU
 using deviceStream_t = cudaStream_t;
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
 using deviceStream_t = hipStream_t;
 #else
 using deviceStream_t = void*;
@@ -1030,7 +1030,7 @@ Stub::Finalize()
                  std::to_string(entry.first);
     }
   }
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
   // We also need to destroy created proxy HIP streams for dlpack, if any
   std::lock_guard<std::mutex> lock(dlpack_proxy_stream_pool_mu_);
   for (auto& entry : dlpack_proxy_stream_pool_) {
@@ -1081,7 +1081,7 @@ Stub::~Stub()
   catch (const PythonBackendException& pb_exception) {
     std::cerr << "Error when closing CUDA handle: " << pb_exception.what();
   }
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
   try {
     if (shm_pool_ != nullptr) {
       HIPHandler& hip_api = HIPHandler::getInstance();
@@ -1473,7 +1473,7 @@ Stub::GetProxyStream(const int& device_id)
     }
   }
   return dlpack_proxy_stream_pool_[device_id];
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
   std::lock_guard<std::mutex> lock(dlpack_proxy_stream_pool_mu_);
   if (dlpack_proxy_stream_pool_.find(device_id) ==
       dlpack_proxy_stream_pool_.end()) {
@@ -1545,7 +1545,7 @@ Stub::GetCUDAMemoryPoolAddress(std::unique_ptr<IPCMessage>& ipc_message)
       ipc_message->ResponseCondition()->wait(lock);
     }
   }
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
   bool has_exception = false;
   std::string error_string;
   std::unique_ptr<PbString> error_string_shm;

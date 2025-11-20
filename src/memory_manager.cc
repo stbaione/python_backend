@@ -53,7 +53,7 @@ BackendMemoryRecord::ReleaseCallback()
 {
   return release_callback_;
 }
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
 BackendMemoryRecord::BackendMemoryRecord(
     std::unique_ptr<BackendMemory> backend_memory)
     : backend_memory_(std::move(backend_memory))

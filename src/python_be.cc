@@ -403,7 +403,7 @@ ModelInstanceState::GetInputTensor(
     cuda_handler.ClearErrorString();
     cpu_only_tensors = true;
   }
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
   HIPhandler& hip_handler = HIPhandler::getInstance();
   if (!hip_handler.IsAvailable() && !cpu_only_tensors) {
     if (!hip_handler.GetErrorString().empty()) {
@@ -428,7 +428,7 @@ ModelInstanceState::GetInputTensor(
 
 // If TRITON_ENABLE_GPU is false, we need to copy the tensors
 // to the CPU.
-#if !defined(TRITON_ENABLE_GPU) && !defined(TRITON_ENABLE_AMD_GPU)
+#if !defined(TRITON_ENABLE_GPU) && !defined(TRITON_ENABLE_ROCM)
   cpu_only_tensors = true;
 #endif
 
@@ -566,7 +566,7 @@ ModelInstanceState::GetInputTensor(
         "Python backend does not support GPU tensors.");
 #endif  // TRITON_ENABLE_GPU
 
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
   ShareHIPMemoryPool(src_memory_type_id);
 
   const void* buffer = nullptr;
@@ -631,7 +631,7 @@ ModelInstanceState::GetInputTensor(
         &hip_used));
 
     if (hip_used) {
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
       hipStreamSynchronize(stream_);
 #endif
     }
@@ -731,7 +731,7 @@ ModelInstanceState::ExecuteBLSRequest(
                 Stub()->ShmPool(), std::move(lbackend_memory))));
             gpu_buffer_helper.AddBuffer(input_tensor->Memory()->ShmHandle());
 #endif  // TRITON_ENABLE_GPU
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
             ShareHIPMemoryPool(input_tensor->MemoryTypeId());
             BackendMemory* backend_memory;
             std::unique_ptr<BackendMemory> lbackend_memory;
@@ -1372,7 +1372,7 @@ ModelInstanceState::ResponseSendDecoupled(
       }
     }
 #endif  // TRITON_ENABLE_GPU
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
     for (auto& output_tensor : infer_response->OutputTensors()) {
       if (!output_tensor->IsCPU()) {
         // Attempt to use the hip shared memory pool for GPU tensor.
@@ -1438,11 +1438,11 @@ ModelInstanceState::ResponseSendDecoupled(
             cudaStreamSynchronize(stream_);
           }
 #endif  // TRITON_ENABLE_GPU
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
           if (cuda_copy) {
             hipStreamSynchronize(stream_);
           }
-#endif  // TRITON_ENABLE_AMD_GPU
+#endif  // TRITON_ENABLE_ROCM
         }
         catch (const PythonBackendException& pb_exception) {
           TRITONSERVER_Error* error = TRITONSERVER_ErrorNew(
@@ -1685,7 +1685,7 @@ ModelInstanceState::ProcessRequests(
         }
       }
 #endif  // TRITON_ENABLE_GPU
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
       for (auto& output_tensor : infer_response->OutputTensors()) {
         if (output_tensor->MemoryType() == TRITONSERVER_MEMORY_GPU) {
           // Attempt to use the hip shared memory pool for GPU tensor.
@@ -1766,11 +1766,11 @@ ModelInstanceState::ProcessRequests(
           cudaStreamSynchronize(stream_);
         }
 #endif  // TRITON_ENABLE_GPU
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
         if (cuda_copy) {
           hipStreamSynchronize(stream_);
         }
-#endif  // TRITON_ENABLE_AMD_GPU
+#endif  // TRITON_ENABLE_ROCM
       }
     }
 
@@ -1829,7 +1829,7 @@ ModelInstanceState::PrepareResponseHandle(
     }
   }
 #endif  // TRITON_ENABLE_GPU
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
   for (auto& output_tensor : (*infer_response)->OutputTensors()) {
     if (!output_tensor->IsCPU()) {
       // Attempt to use the hip shared memory pool for GPU tensor.
@@ -1856,7 +1856,7 @@ ModelInstanceState::PrepareResponseHandle(
           Stub()->GetMemoryManager()->AddRecord(std::move(memory_record));
       output_tensor->Memory()->SetMemoryReleaseId(memory_release_id);
 #endif
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
       std::unique_ptr<MemoryRecord> memory_record;
       // Need to transfer the ownership of the BackendMemory to the
       // MemoryManager so that the lifetime of the BackendMemory is managed.
@@ -1940,7 +1940,7 @@ ModelInstanceState::ShareCUDAMemoryPool(const int32_t device_id)
 void
 ModelInstanceState::ShareHIPMemoryPool(const int32_t device_id)
 {
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
   try {
     Stub()->ShareHIPMemoryPool(Model()->TritonMemoryManager(), device_id);
   }
@@ -1951,7 +1951,7 @@ ModelInstanceState::ShareHIPMemoryPool(const int32_t device_id)
          ex.what() + ". Will use HIP IPC.")
             .c_str());
   }
-#endif // TRITON_ENABLE_AMD_GPU
+#endif // TRITON_ENABLE_ROCM
 }
 
 ModelInstanceState::~ModelInstanceState()
@@ -2637,7 +2637,7 @@ TRITONBACKEND_GetBackendAttribute(
 #ifdef TRITON_ENABLE_GPU
   RETURN_IF_ERROR(TRITONBACKEND_BackendAttributeAddPreferredInstanceGroup(
       backend_attributes, TRITONSERVER_INSTANCEGROUPKIND_GPU, 0, nullptr, 0));
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
   RETURN_IF_ERROR(TRITONBACKEND_BackendAttributeAddPreferredInstanceGroup(
       backend_attributes, TRITONSERVER_INSTANCEGROUPKIND_GPU, 0, nullptr, 0));
 #else

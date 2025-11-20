@@ -239,9 +239,9 @@ InferResponse::Send(
   static bool log_warning = true;
 #endif  // TRITON_ENABLE_GPU
 
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
   static bool log_warning = true;
-#endif  // TRITON_ENABLE_AMD_GPU
+#endif  // TRITON_ENABLE_ROCM
 
   std::shared_ptr<TRITONSERVER_Error*> response_error =
       WrapTritonErrorInSharedPtr(nullptr);
@@ -383,7 +383,7 @@ InferResponse::Send(
       gpu_buffer_helper.AddBuffer(output_buffer->ShmHandle());
       output_buffers.push_back(
           {std::move(output_buffer), triton_output_buffer});
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
       // Check if the triton-provided output buffer is using CUDA shared memory
       // pool. If not, try to allocate a new buffer from the pool.
       void* buffer = triton_output_buffer;
@@ -476,7 +476,7 @@ InferResponse::Send(
               output_tensor->ByteSize(), output_tensor->DataPtr(),
               triton_output_buffer, reinterpret_cast<cudaStream_t>(cuda_stream),
               &cuda_used));
-      #elif defined(TRITON_ENABLE_AMD_GPU)
+      #elif defined(TRITON_ENABLE_ROCM)
       SET_ERROR_AND_RETURN(
           response_error,
           CopyBuffer(
@@ -485,7 +485,7 @@ InferResponse::Send(
               output_tensor->ByteSize(), output_tensor->DataPtr(),
               triton_output_buffer, reinterpret_cast<hipStream_t>(cuda_stream),
               &cuda_used));
-      #endif  // TRITON_ENABLE_GPU || TRITON_ENABLE_AMD_GPU
+      #endif  // TRITON_ENABLE_GPU || TRITON_ENABLE_ROCM
     }
 
     cuda_copy |= cuda_used;
@@ -529,7 +529,7 @@ InferResponse::Send(
   }
 #endif  // TRITON_ENABLE_GPU
 
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
   if (cuda_copy) {
     hipStreamSynchronize(reinterpret_cast<hipStream_t>(cuda_stream));
   }

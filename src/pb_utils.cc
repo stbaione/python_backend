@@ -49,7 +49,7 @@ extern char** environ;
 #include <cuda_runtime_api.h>
 #endif
 
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
 #include <hip/hip_runtime.h>
 #endif
 
@@ -301,7 +301,7 @@ IsUsingCUDAPool(
 
 #endif  // TRITON_ENABLE_GPU
 
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
 
 HIPHandler::HIPHandler()
 {
@@ -544,7 +544,7 @@ IsUsingHIPPool(
       reinterpret_cast<void*>(hip_pool_address));
 }
 
-#endif  // TRITON_ENABLE_AMD_GPU
+#endif  // TRITON_ENABLE_ROCM
 
 // FIXME: [DLIS-6078]: We should not need this function. However, some paths are
 // being retrieved from core that are not platform-agnostic.

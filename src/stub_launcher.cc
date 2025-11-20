@@ -1002,7 +1002,7 @@ StubLauncher::ShareCUDAMemoryPool(
     throw pb_exception;
   }
 }
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
 void
 StubLauncher::ShareHIPMemoryPool(
     TRITONBACKEND_MemoryManager* triton_mem_manager, const int32_t device_id)
@@ -1101,5 +1101,5 @@ StubLauncher::ShareHIPMemoryPool(
     throw pb_exception;
   }
 }
-#endif  // TRITON_ENABLE_AMD_GPU
+#endif  // TRITON_ENABLE_ROCM
 }}};    // namespace triton::backend::python

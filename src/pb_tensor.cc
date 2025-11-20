@@ -28,9 +28,9 @@
 #include <cuda.h>
 #endif  // TRITON_ENABLE_GPU
 
-#ifdef TRITON_ENABLE_AMD_GPU
+#ifdef TRITON_ENABLE_ROCM
 #include <hip/hip_runtime.h>
-#endif  // TRITON_ENABLE_AMD_GPU
+#endif  // TRITON_ENABLE_ROCM
 
 #ifdef TRITON_PB_STUB
 #include "pb_stub.h"
@@ -458,7 +458,7 @@ PbTensor::FromDLPack(const std::string& name, const py::object& tensor)
     }
 
     return ptr_to_tensor;
-#elif defined(TRITON_ENABLE_AMD_GPU)
+#elif defined(TRITON_ENABLE_ROCM)
     int current_device;
     hipError_t err = hipGetDevice(&current_device);
     std::unique_ptr<Stub>& stub = Stub::GetOrCreateInstance();
