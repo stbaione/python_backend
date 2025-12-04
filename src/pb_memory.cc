@@ -204,6 +204,14 @@ PbMemory::FillShmData(
   memory_shm_ptr->byte_size = byte_size;
   memory_shm_ptr->memory_type_id = memory_type_id;
   memory_shm_ptr->memory_type = memory_type;
+
+  // DEBUG: Log what we're writing to shared memory
+  std::cerr << "DEBUG FillShmData: data_shm=" << reinterpret_cast<uintptr_t>(data_shm)
+            << " sizeof(MemoryShm)=" << sizeof(MemoryShm)
+            << " byte_size=" << byte_size
+            << " memory_type=" << memory_type
+            << " written_byte_size=" << memory_shm_ptr->byte_size
+            << std::endl;
 }
 
 std::unique_ptr<PbMemory>
@@ -213,6 +221,16 @@ PbMemory::LoadFromSharedMemory(
 {
   MemoryShm* memory_shm_ptr = reinterpret_cast<MemoryShm*>(data_shm);
   char* memory_data_shm = data_shm + sizeof(MemoryShm);
+
+  // DEBUG: Log what we're reading from shared memory
+  LOG_MESSAGE(
+      TRITONSERVER_LOG_INFO,
+      (std::string("DEBUG LoadFromSharedMemory(inline): ") +
+       "data_shm=" + std::to_string(reinterpret_cast<uintptr_t>(data_shm)) +
+       " sizeof(MemoryShm)=" + std::to_string(sizeof(MemoryShm)) +
+       " byte_size=" + std::to_string(memory_shm_ptr->byte_size) +
+       " memory_type=" + std::to_string(memory_shm_ptr->memory_type) +
+       " gpu_offset=" + std::to_string(memory_shm_ptr->gpu_pointer_offset)).c_str());
 
   char* data_ptr = nullptr;
   bool opened_cuda_ipc_handle = false;
