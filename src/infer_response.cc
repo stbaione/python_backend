@@ -329,6 +329,16 @@ InferResponse::Send(
     }
 
     if (src_memory_type != TRITONSERVER_MEMORY_GPU) {
+        // DEBUG: Log tensor info before CopyBuffer
+        LOG_MESSAGE(
+            TRITONSERVER_LOG_INFO,
+            (std::string("DEBUG CopyBuffer: tensor=") + output_tensor->Name() +
+             " ByteSize=" + std::to_string(output_tensor->ByteSize()) +
+             " DataPtr=" + std::to_string(reinterpret_cast<uintptr_t>(output_tensor->DataPtr())) +
+             " buffer=" + std::to_string(reinterpret_cast<uintptr_t>(buffer)) +
+             " src_memory_type=" + std::to_string(src_memory_type) +
+             " actual_memory_type=" + std::to_string(actual_memory_type)).c_str());
+
         SET_ERROR_AND_RETURN(
             response_error,
             CopyBuffer(
