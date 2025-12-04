@@ -329,7 +329,6 @@ InferResponse::Send(
     }
 
     if (src_memory_type != TRITONSERVER_MEMORY_GPU) {
-      #ifdef TRITON_ENABLE_ROCM
         SET_ERROR_AND_RETURN(
             response_error,
             CopyBuffer(
@@ -337,7 +336,6 @@ InferResponse::Send(
                 src_memory_type_id, actual_memory_type, actual_memory_type_id,
                 output_tensor->ByteSize(), output_tensor->DataPtr(), buffer,
                 reinterpret_cast<hipStream_t>(cuda_stream), &cuda_used));
-      #endif
     }
 
     cuda_copy |= cuda_used;
