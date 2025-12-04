@@ -223,6 +223,7 @@ PbMemory::LoadFromSharedMemory(
   char* memory_data_shm = data_shm + sizeof(MemoryShm);
 
   // DEBUG: Log what we're reading from shared memory
+#ifndef TRITON_PB_STUB
   LOG_MESSAGE(
       TRITONSERVER_LOG_INFO,
       (std::string("DEBUG LoadFromSharedMemory(inline): ") +
@@ -231,6 +232,15 @@ PbMemory::LoadFromSharedMemory(
        " byte_size=" + std::to_string(memory_shm_ptr->byte_size) +
        " memory_type=" + std::to_string(memory_shm_ptr->memory_type) +
        " gpu_offset=" + std::to_string(memory_shm_ptr->gpu_pointer_offset)).c_str());
+#else
+  std::cerr << "DEBUG LoadFromSharedMemory(inline): "
+            << "data_shm=" << reinterpret_cast<uintptr_t>(data_shm)
+            << " sizeof(MemoryShm)=" << sizeof(MemoryShm)
+            << " byte_size=" << memory_shm_ptr->byte_size
+            << " memory_type=" << memory_shm_ptr->memory_type
+            << " gpu_offset=" << memory_shm_ptr->gpu_pointer_offset
+            << std::endl;
+#endif
 
   char* data_ptr = nullptr;
   bool opened_cuda_ipc_handle = false;
