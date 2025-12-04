@@ -129,6 +129,7 @@ if(${TRITON_ENABLE_ROCM})
   find_package(hip REQUIRED)
   message(STATUS "Using ROCm HIP ${hip_VERSION}")
   set(HIP_HIPCC_FLAGS -std=c++${TRITON_MIN_CXX_STANDARD})
+  add_definitions(-DTRITON_ENABLE_ROCM=1)
 elseif()
   message(WARNING "TRITON_ENABLE_ROCM is OFF, AMD GPU Tensor support will be disabled")
 endif() # TRITON_ENABLE_ROCM
