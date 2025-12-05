@@ -71,10 +71,14 @@ PbTensor::PbTensor(const std::string& name, py::array& numpy_array)
     byte_size_ = numpy_array_.nbytes();
   }
 
-  std::cerr << "DEBUG PbTensor::PbTensor: name=" << name_
-            << " byte_size_=" << byte_size_
-            << " memory_ptr_=" << reinterpret_cast<uintptr_t>(memory_ptr_)
-            << " numpy_nbytes=" << numpy_array_.nbytes()
+  // Compare C++ API vs Python attribute access
+  std::cerr << "DEBUG array comparison: name=" << name_
+            << " C++ nbytes()=" << numpy_array_.nbytes()
+            << " C++ size()=" << numpy_array_.size()
+            << " C++ itemsize()=" << numpy_array_.itemsize()
+            << " Python nbytes=" << numpy_array_.attr("nbytes").cast<ssize_t>()
+            << " Python size=" << numpy_array_.attr("size").cast<ssize_t>()
+            << " Python itemsize=" << numpy_array_.attr("itemsize").cast<ssize_t>()
             << std::endl;
 
   // Initialize tensor dimension
