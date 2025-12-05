@@ -71,6 +71,12 @@ PbTensor::PbTensor(const std::string& name, py::array& numpy_array)
     byte_size_ = numpy_array_.nbytes();
   }
 
+  std::cerr << "DEBUG PbTensor::PbTensor: name=" << name_
+            << " byte_size_=" << byte_size_
+            << " memory_ptr_=" << reinterpret_cast<uintptr_t>(memory_ptr_)
+            << " numpy_nbytes=" << numpy_array_.nbytes()
+            << std::endl;
+
   // Initialize tensor dimension
   size_t dims_count = numpy_array_.ndim();
 
@@ -535,6 +541,12 @@ void
 PbTensor::SaveToSharedMemory(
     std::unique_ptr<SharedMemoryManager>& shm_pool, bool copy_gpu)
 {
+  std::cerr << "DEBUG SaveToSharedMemory: name=" << name_
+            << " byte_size_=" << byte_size_
+            << " memory_ptr_=" << reinterpret_cast<uintptr_t>(memory_ptr_)
+            << " pb_memory_=" << (pb_memory_ ? "set" : "null")
+            << std::endl;
+
   if (!tensor_shm_.data_) {
     uint64_t byte_size;
     if (!pb_memory_) {
